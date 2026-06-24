@@ -195,7 +195,7 @@ function wireXlsxLoader(){
     finally { input.value = ''; }
   };
   const restore = $('restoreData');
-  if(restore) restore.onclick = () => setDataset(cloneDefaultData(), '기본 내장 데이터 사용 중');
+  if(restore) restore.onclick = () => setDataset(cloneDefaultData(), window.DEFAULT_DATA_SOURCE_LABEL || '기본 내장 데이터 사용 중');
 }
 
 function wireTabs(){
