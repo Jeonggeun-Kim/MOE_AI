@@ -214,7 +214,7 @@ function wireTabs(){
       const m = meta[btn.dataset.tab] || meta.similarity;
       if(title) title.textContent = m[0];
       if(sub) sub.textContent = m[1];
-      setTimeout(renderAll, 0);
+      requestAnimationFrame(() => { renderAll(); if(btn.dataset.tab === 'relation') setTimeout(renderRelationAnalysis, 60); });
     };
   });
 }
@@ -266,6 +266,10 @@ function init(){
   if(pa) pa.onchange = () => renderPortfolioAnalysis();
   const st = $('similarityThreshold');
   if(st) st.onchange = () => renderDuplicationAnalysis();
+  const rt = $('relationThreshold');
+  if(rt) rt.onchange = () => renderRelationAnalysis();
+  const rn = $('relationMaxNodes');
+  if(rn) rn.onchange = () => renderRelationAnalysis();
   wireMap();
   window.addEventListener('resize', () => renderAll());
   renderAll();
