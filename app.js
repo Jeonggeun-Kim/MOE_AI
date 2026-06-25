@@ -203,7 +203,8 @@ function wireTabs(){
     similarity: ['사업별 정성 유사도', '주요 요소 축을 기준으로 사업간 분포 현황과 비교를 수행합니다.'],
     temp: ['사업간 심층 비교 분석', '선택한 사업들의 핵심 지표와 포지셔닝 특성을 보고서 형식으로 비교합니다.'],
     portfolio: ['부처별 포트폴리오 분석', '부처별 사업 포트폴리오의 중복 영역과 편중 영역을 매트릭스로 확인합니다.'],
-    duplication: ['중복성/유사사업 탐지', '사업 간 좌표 거리와 지표 중첩도를 결합해 유사사업 후보를 탐색합니다.']
+    duplication: ['중복성/유사사업 탐지', '사업 간 좌표 거리와 지표 중첩도를 결합해 유사사업 후보를 탐색합니다.'],
+    relation: ['과제 연관성 네트워크', '유사도 기반 네트워크와 덴드로그램으로 과제군의 연결 구조를 확인합니다.']
   };
   document.querySelectorAll('.tabBtn').forEach(btn => {
     btn.onclick = () => {
@@ -923,6 +924,151 @@ function renderDuplicationAnalysis(){
   <section class="analysisCard"><h3>유사사업 후보 목록</h3><div class="reportTableWrap"><table class="reportTable"><thead><tr><th>사업 A</th><th>사업 B</th><th>유사도</th><th>세부 근거</th></tr></thead><tbody>${pairRows || '<tr><td colspan="4">현재 기준 이상의 유사사업 후보가 없습니다. 기준을 낮춰보십시오.</td></tr>'}</tbody></table></div></section>`;
 }
 
-function renderAll(){ const rows=filtered(); $('filteredCount').textContent=rows.length; $('selectedCount').textContent=visibleRows(rows).length; renderScatter(rows); drawRadar(rows); renderCards(rows); renderDeepComparison(); renderPortfolioAnalysis(); renderDuplicationAnalysis(); }
+
+function truncateName(s, n=18){ const t=String(s||''); return t.length>n ? t.slice(0,n-1)+'…' : t; }
+function deptKey(r){ return normVals(r['주관부처'])[0] || '미분류'; }
+function relationPairs(rows, threshold){
+  const pairs=[];
+  for(let i=0;i<rows.length;i++) for(let j=i+1;j<rows.length;j++){
+    const s=similarityScore(rows[i],rows[j]);
+    if(s.score>=threshold) pairs.push({a:rows[i],b:rows[j],score:s.score,detail:s});
+  }
+  pairs.sort((x,y)=>y.score-x.score);
+  return pairs;
+}
+function pickRelationNodes(rows, pairs, maxNodes){
+  const weight={};
+  pairs.forEach(p=>{ weight[p.a.id]=(weight[p.a.id]||0)+p.score; weight[p.b.id]=(weight[p.b.id]||0)+p.score; });
+  const ranked=rows.slice().sort((a,b)=>(weight[b.id]||0)-(weight[a.id]||0));
+  return ranked.slice(0, Math.min(maxNodes, ranked.length));
+}
+function renderNetworkSvg(nodes, edges){
+  const w=980,h=620,cx=w/2,cy=h/2;
+  const cm={}; [...new Set(nodes.map(deptKey))].forEach((d,i)=>cm[d]=palette[i%palette.length]);
+  const pos={};
+  nodes.forEach((n,i)=>{ const a=2*Math.PI*i/Math.max(1,nodes.length); pos[n.id]={x:cx+Math.cos(a)*w*.31,y:cy+Math.sin(a)*h*.33}; });
+  // deterministic force relaxation
+  for(let it=0; it<160; it++){
+    const disp={}; nodes.forEach(n=>disp[n.id]={x:0,y:0});
+    for(let i=0;i<nodes.length;i++) for(let j=i+1;j<nodes.length;j++){
+      const A=pos[nodes[i].id], B=pos[nodes[j].id]; let dx=A.x-B.x, dy=A.y-B.y; let d=Math.sqrt(dx*dx+dy*dy)||1;
+      const rep=9200/(d*d); dx/=d; dy/=d; disp[nodes[i].id].x+=dx*rep; disp[nodes[i].id].y+=dy*rep; disp[nodes[j].id].x-=dx*rep; disp[nodes[j].id].y-=dy*rep;
+    }
+    edges.forEach(e=>{
+      const A=pos[e.a.id], B=pos[e.b.id]; let dx=B.x-A.x, dy=B.y-A.y; let d=Math.sqrt(dx*dx+dy*dy)||1;
+      const target=88+(1-e.score)*190; const f=(d-target)*0.020*e.score; dx/=d; dy/=d;
+      disp[e.a.id].x+=dx*f; disp[e.a.id].y+=dy*f; disp[e.b.id].x-=dx*f; disp[e.b.id].y-=dy*f;
+    });
+    nodes.forEach(n=>{ const p=pos[n.id], d=disp[n.id]; p.x=clamp(p.x+d.x,82,w-82); p.y=clamp(p.y+d.y,58,h-62); });
+  }
+  const edgeSvg=edges.map((e,idx)=>{ const A=pos[e.a.id], B=pos[e.b.id]; const sw=1.2+5.2*Math.max(0,e.score-.6); return `<line class="netEdge" data-a="${e.a.id}" data-b="${e.b.id}" data-score="${e.score.toFixed(3)}" x1="${A.x.toFixed(1)}" y1="${A.y.toFixed(1)}" x2="${B.x.toFixed(1)}" y2="${B.y.toFixed(1)}" stroke="#2563eb" stroke-opacity="${Math.min(.76, .14+e.score*.55).toFixed(2)}" stroke-width="${Math.max(1,sw).toFixed(1)}"><title>${esc(e.a.사업명)} ↔ ${esc(e.b.사업명)} ${e.score.toFixed(2)}</title></line>`; }).join('');
+  const nodeSvg=nodes.map(n=>{ const p=pos[n.id], degree=edges.filter(e=>e.a.id===n.id||e.b.id===n.id).length; const r=8+Math.min(13,degree*1.35); const c=cm[deptKey(n)]; return `<g class="netNode" data-id="${n.id}" data-name="${esc(n.사업명)}" data-dept="${esc(deptKey(n))}" data-degree="${degree}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})"><circle r="${r}" fill="${c}" stroke="#fff" stroke-width="2.5"></circle><text x="${r+7}" y="4">${esc(truncateName(n.사업명,17))}</text><title>${esc(n.사업명)}\n${esc(deptKey(n))}\n연결 ${degree}개</title></g>`; }).join('');
+  const legend=Object.entries(cm).map(([d,c])=>`<span><i style="background:${c}"></i>${esc(d)}</span>`).join('');
+  return `<div class="networkLegend">${legend}</div><div class="networkHelp">노드를 드래그해 위치를 조정할 수 있습니다. 노드에 마우스를 올리면 직접 연결 edge가 강조됩니다.</div><svg id="networkSvg" class="networkSvg" viewBox="0 0 ${w} ${h}" role="img"><g class="netEdges">${edgeSvg}</g><g class="netNodes">${nodeSvg}</g></svg>`;
+}
+
+function attachNetworkInteractions(){
+  const svg = document.getElementById('networkSvg');
+  if(!svg) return;
+  let drag = null;
+  function pt(evt){
+    const p = svg.createSVGPoint(); p.x = evt.clientX; p.y = evt.clientY;
+    return p.matrixTransform(svg.getScreenCTM().inverse());
+  }
+  function setNodePos(node, x, y){
+    node.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
+    const id = node.dataset.id;
+    svg.querySelectorAll(`.netEdge[data-a="${id}"], .netEdge[data-b="${id}"]`).forEach(edge=>{
+      if(edge.dataset.a === id){ edge.setAttribute('x1', x.toFixed(1)); edge.setAttribute('y1', y.toFixed(1)); }
+      if(edge.dataset.b === id){ edge.setAttribute('x2', x.toFixed(1)); edge.setAttribute('y2', y.toFixed(1)); }
+    });
+  }
+  svg.querySelectorAll('.netNode').forEach(node=>{
+    node.addEventListener('pointerdown', e=>{
+      if(e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      const m = /translate\(([-0-9.]+),([-0-9.]+)\)/.exec(node.getAttribute('transform'));
+      const cur = pt(e);
+      drag = {node, ox: cur.x - Number(m?.[1]||0), oy: cur.y - Number(m?.[2]||0)};
+      node.classList.add('dragging');
+      svg.setPointerCapture(e.pointerId);
+    });
+    node.addEventListener('mouseenter', ()=>{
+      const id=node.dataset.id;
+      svg.classList.add('netHovering');
+      node.classList.add('focusNode');
+      svg.querySelectorAll(`.netEdge[data-a="${id}"], .netEdge[data-b="${id}"]`).forEach(e=>e.classList.add('focusEdge'));
+    });
+    node.addEventListener('mouseleave', ()=>{
+      svg.classList.remove('netHovering');
+      svg.querySelectorAll('.focusNode,.focusEdge').forEach(el=>el.classList.remove('focusNode','focusEdge'));
+    });
+  });
+  svg.addEventListener('pointermove', e=>{
+    if(!drag) return;
+    const cur=pt(e);
+    const x=clamp(cur.x-drag.ox, 40, 940), y=clamp(cur.y-drag.oy, 40, 580);
+    setNodePos(drag.node, x, y);
+  });
+  svg.addEventListener('pointerup', e=>{
+    if(drag){ drag.node.classList.remove('dragging'); drag=null; }
+    try{ svg.releasePointerCapture(e.pointerId); }catch(_){ }
+  });
+}
+
+function avgDistance(c1,c2,dist){
+  let s=0,n=0; c1.items.forEach(a=>c2.items.forEach(b=>{ s+=dist[a+'|'+b] ?? dist[b+'|'+a] ?? 1; n++; }));
+  return n?s/n:1;
+}
+function buildDendrogram(nodes){
+  const leaves=nodes.map((n,i)=>({id:'L'+i, name:n.사업명, items:[i], height:0, left:null, right:null}));
+  if(leaves.length<2) return {root:leaves[0], order:leaves};
+  const dist={};
+  for(let i=0;i<nodes.length;i++) for(let j=i+1;j<nodes.length;j++) dist[i+'|'+j]=1-similarityScore(nodes[i],nodes[j]).score;
+  let clusters=leaves.slice(), idx=0;
+  while(clusters.length>1){
+    let best=[0,1,Infinity];
+    for(let i=0;i<clusters.length;i++) for(let j=i+1;j<clusters.length;j++){ const d=avgDistance(clusters[i],clusters[j],dist); if(d<best[2]) best=[i,j,d]; }
+    const [i,j,d]=best; const a=clusters[i], b=clusters[j];
+    const merged={id:'C'+(idx++), name:'', items:[...a.items,...b.items], height:d, left:a, right:b};
+    clusters=clusters.filter((_,k)=>k!==i&&k!==j); clusters.push(merged);
+  }
+  const order=[]; (function walk(c){ if(!c.left&&!c.right) order.push(c); else {walk(c.left); walk(c.right);} })(clusters[0]);
+  return {root:clusters[0], order};
+}
+function renderDendrogramSvg(nodes){
+  const dend=buildDendrogram(nodes);
+  if(!dend.root) return '<p class="muted">덴드로그램을 그릴 노드가 부족합니다.</p>';
+  const rowH=28, labelW=260, w=980, h=Math.max(220, dend.order.length*rowH+40), maxH=Math.max(.001,dend.root.height||1);
+  const yPos={}; dend.order.forEach((l,i)=>yPos[l.id]=28+i*rowH);
+  function nodeY(c){ if(yPos[c.id]!==undefined) return yPos[c.id]; return (nodeY(c.left)+nodeY(c.right))/2; }
+  function nodeX(c){ return labelW + (1-(c.height/maxH))*(w-labelW-40); }
+  const lines=[];
+  (function draw(c){
+    if(!c.left||!c.right) return;
+    const x=nodeX(c), y1=nodeY(c.left), y2=nodeY(c.right), xl=nodeX(c.left), xr=nodeX(c.right);
+    lines.push(`<path d="M ${x} ${y1} L ${x} ${y2} M ${x} ${y1} L ${xl} ${y1} M ${x} ${y2} L ${xr} ${y2}" class="dendLine"><title>거리 ${c.height.toFixed(2)} / 유사도 ${(1-c.height).toFixed(2)}</title></path>`);
+    draw(c.left); draw(c.right);
+  })(dend.root);
+  const labels=dend.order.map((l,i)=>`<text x="14" y="${yPos[l.id]+4}" class="dendLabel"><title>${esc(nodes[l.items[0]].사업명)}</title>${esc(truncateName(nodes[l.items[0]].사업명,34))}</text>`).join('');
+  return `<svg class="dendSvg" viewBox="0 0 ${w} ${h}" role="img"><line x1="${labelW}" y1="18" x2="${w-34}" y2="18" stroke="#e2e8f0"/><text x="${labelW}" y="14" class="dendAxis">유사도 높음</text><text x="${w-105}" y="14" class="dendAxis">유사도 낮음</text>${lines.join('')}${labels}</svg>`;
+}
+function renderRelationAnalysis(){
+  const host=$('relationBody'); if(!host) return;
+  const baseRows=filtered(); const rows=visibleRows(baseRows); const threshold=Number($('relationThreshold')?.value||0.65); const maxNodes=Number($('relationMaxNodes')?.value||24);
+  if(rows.length<2){ host.innerHTML=`<div class="reportEmpty"><h3>연관성을 분석할 선택 사업이 부족합니다.</h3><p>첫 번째 탭에서 스파이더 표시 중인 사업이 2개 이상 필요합니다.</p></div>`; return; }
+  const pairs=relationPairs(rows,threshold);
+  const nodes=pickRelationNodes(rows,pairs,maxNodes);
+  const nodeIds=new Set(nodes.map(n=>n.id));
+  const edges=pairs.filter(p=>nodeIds.has(p.a.id)&&nodeIds.has(p.b.id)).slice(0,Math.max(30,maxNodes*4));
+  const deptCount=new Set(nodes.map(deptKey)).size;
+  const avg=edges.length?edges.reduce((s,e)=>s+e.score,0)/edges.length:0;
+  host.innerHTML=`<div class="analysisSummary"><div><b>${nodes.length}</b><span>표시 과제</span></div><div><b>${edges.length}</b><span>연관 edge</span></div><div><b>${avg.toFixed(2)}</b><span>평균 유사도</span></div></div>
+  <section class="analysisCard"><div class="analysisCardHead"><div><h3>과제 연관성 네트워크</h3><p>첫 번째 탭에서 스파이더 표시 중인 사업만 대상으로 합니다. 노드는 과제, 선은 기준 이상 유사도를 뜻합니다.</p></div><span class="miniBadge">${deptCount}개 부처</span></div>${edges.length?renderNetworkSvg(nodes,edges):'<p class="muted">현재 기준 이상의 연결이 부족합니다. 연관성 기준을 낮춰보십시오.</p>'}</section>
+  <section class="analysisCard"><div class="analysisCardHead"><div><h3>과제군 덴드로그램</h3><p>첫 번째 탭에서 스파이더 표시 중인 사업만 대상으로 한 평균연결 군집화입니다. 가까이 묶일수록 성격이 유사합니다.</p></div><span class="miniBadge">상위 ${nodes.length}개</span></div><div class="dendWrap">${renderDendrogramSvg(nodes.slice(0,Math.min(nodes.length,32)))}</div></section>`;
+  attachNetworkInteractions();
+}
+
+function renderAll(){ const rows=filtered(); $('filteredCount').textContent=rows.length; $('selectedCount').textContent=visibleRows(rows).length; renderScatter(rows); drawRadar(rows); renderCards(rows); renderDeepComparison(); renderPortfolioAnalysis(); renderDuplicationAnalysis(); renderRelationAnalysis(); }
 
 document.addEventListener('DOMContentLoaded', init);
